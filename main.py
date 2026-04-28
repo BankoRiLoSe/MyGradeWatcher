@@ -12,10 +12,10 @@ from Crypto.Cipher import PKCS1_v1_5 as Cipher_pkcs1_v1_5
 
 # ================= 配置区域 =================
 USERNAME = "231210400308"
-PASSWORD = "Mh5211314@"
+PASSWORD = "******"
 # 接收通知的邮箱
 MAIL_USER = "2089058985@qq.com"
-MAIL_PASS = "rnguxgvtzkegefbj"
+MAIL_PASS = "*******"
 RECEIVER = "mh2089058985@gmail.com"
 
 
