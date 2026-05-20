@@ -2,46 +2,52 @@ name: Check Grades Auto
 
 on:
   schedule:
-    - cron: '*/30 * * * *'  # 每30分钟运行一次 (北京时间可能会有延迟，正常现象)
-  workflow_dispatch:      # 允许你手动点按钮运行测试
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
 
-# 给仓库写入权限，这样才能保存 grade_cache.txt
 permissions:
   contents: write
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    
+
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
-          python-version: '3.9'
+          python-version: "3.11"
 
       - name: Install dependencies
-        run: |
-          pip install -r requirements.txt
+        run: pip install -r requirements.txt
 
       - name: Run script
-        # 设置时区为北京时间，方便日志查看
         env:
           TZ: Asia/Shanghai
+          GRADE_USERNAME: ${{ secrets.GRADE_USERNAME }}
+          GRADE_PASSWORD: ${{ secrets.GRADE_PASSWORD }}
+          MAIL_USER: ${{ secrets.MAIL_USER }}
+          MAIL_PASS: ${{ secrets.MAIL_PASS }}
+          MAIL_RECEIVER: ${{ secrets.MAIL_RECEIVER }}
+          TARGET_XNM: ${{ secrets.TARGET_XNM }}
         run: python main.py
 
       - name: Commit and push cache if changed
         run: |
-          # 配置 git 机器人身份
-          git config --global user.name "GradeBot"
-          git config --global user.email "actions@github.com"
-          
-          # 检查是否有 grade_cache.txt 且内容发生了变化
-          git add grade_cache.txt
-          
-          # 如果文件有变化，就提交保存；没变化就不动
-          # timestamp 用于确保每次提交信息不同
-          git commit -m "Update grade cache" || exit 0
+          git config user.name "GradeBot"
+          git config user.email "actions@github.com"
+
+          if [ -f grade_cache.txt ]; then
+            git add grade_cache.txt
+          fi
+
+          if git diff --cached --quiet; then
+            echo "No cache changes."
+            exit 0
+          fi
+
+          git commit -m "Update grade cache"
           git push
