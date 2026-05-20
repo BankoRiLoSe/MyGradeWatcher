@@ -1,32 +1,33 @@
-import requests
-import time
 import base64
-import json
 import os
 import smtplib
-from email.mime.text import MIMEText
+import sys
+import time
 from email.header import Header
-from email.utils import formataddr  # === 新增：用于标准化邮件地址 ===
-from Crypto.PublicKey import RSA
+from email.mime.text import MIMEText
+from email.utils import formataddr
+
+import requests
 from Crypto.Cipher import PKCS1_v1_5 as Cipher_pkcs1_v1_5
+from Crypto.PublicKey import RSA
 
-# ================= 配置区域 =================
-USERNAME = "231210400308"
-PASSWORD = "******"
-# 接收通知的邮箱
-MAIL_USER = "2089058985@qq.com"
-MAIL_PASS = "*******"
-RECEIVER = "mh2089058985@gmail.com"
+USERNAME = os.getenv("GRADE_USERNAME", "")
+PASSWORD = os.getenv("GRADE_PASSWORD", "")
+MAIL_USER = os.getenv("MAIL_USER", "")
+MAIL_PASS = os.getenv("MAIL_PASS", "")
+RECEIVER = os.getenv("MAIL_RECEIVER", "")
+TARGET_XNM = os.getenv("TARGET_XNM", "")
+CACHE_FILE = "grade_cache.txt"
+BASE_URL = "https://jwglxt.haut.edu.cn/jwglxt"
 
-
-# ===========================================
 
 def get_rsa_int(content):
     try:
         missing_padding = len(content) % 4
-        if missing_padding: content += '=' * (4 - missing_padding)
-        return int.from_bytes(base64.b64decode(content), byteorder='big')
-    except:
+        if missing_padding:
+            content += "=" * (4 - missing_padding)
+        return int.from_bytes(base64.b64decode(content), byteorder="big")
+    except Exception:
         return int(content, 16)
 
 
@@ -36,124 +37,129 @@ def encrypt_password(password, modulus, exponent):
     return base64.b64encode(cipher.encrypt(password.encode())).decode()
 
 
+def load_cache():
+    if not os.path.exists(CACHE_FILE):
+        return set()
+    with open(CACHE_FILE, "r", encoding="utf-8") as f:
+        content = f.read().strip()
+    return set(filter(None, content.split(",")))
+
+
+def save_cache(ids):
+    with open(CACHE_FILE, "w", encoding="utf-8") as f:
+        f.write(",".join(sorted(ids)))
+
+
 def send_mail(new_courses):
-    if "你的QQ" in MAIL_USER:
-        print("【提示】邮箱未配置，跳过发送。")
+    if not (MAIL_USER and MAIL_PASS and RECEIVER):
+        print("邮箱配置不完整，跳过发送。")
         return
 
     content = "检测到成绩更新：\n\n"
     for course in new_courses:
-        # 兼容一下有时候学分可能为空的情况
-        score = course.get('cj', '未知')
-        credit = course.get('xf', '未知')
-        content += f"课程：{course['kcmc']}\n成绩：{score}\n学分：{credit}\n------------------\n"
+        content += (
+            f"课程：{course.get('kcmc', '未知')}\n"
+            f"成绩：{course.get('cj', '未知')}\n"
+            f"学分：{course.get('xf', '未知')}\n"
+            "------------------\n"
+        )
 
-    msg = MIMEText(content, 'plain', 'utf-8')
+    msg = MIMEText(content, "plain", "utf-8")
+    msg["From"] = formataddr(("GradeBot", MAIL_USER))
+    msg["To"] = formataddr(("Student", RECEIVER))
+    msg["Subject"] = Header(f"共 {len(new_courses)} 门", "utf-8")
 
-    # === 关键修复：使用 formataddr 生成符合 RFC 标准的头部 ===
-    # 格式会变成： "GradeBot <123456@qq.com>"
-    msg['From'] = formataddr(["GradeBot", MAIL_USER])
-    msg['To'] = formataddr(["Student", RECEIVER])
+    with smtplib.SMTP_SSL("smtp.qq.com", 465) as smtp:
+        smtp.login(MAIL_USER, MAIL_PASS)
+        smtp.sendmail(MAIL_USER, [RECEIVER], msg.as_string())
 
-    msg['Subject'] = Header(f"【新成绩】{new_courses[0]['kcmc']} 等{len(new_courses)}门", 'utf-8')
-
-    try:
-        smtpObj = smtplib.SMTP_SSL("smtp.qq.com", 465)
-        smtpObj.login(MAIL_USER, MAIL_PASS)
-        smtpObj.sendmail(MAIL_USER, [RECEIVER], msg.as_string())
-        print(">>> 邮件发送成功！")
-    except Exception as e:
-        print(f"邮件发送失败: {e}")
+    print(">>> 邮件发送成功！")
 
 
 def run():
-    base_url = "https://jwglxt.haut.edu.cn/jwglxt"
+    if not USERNAME or not PASSWORD:
+        print("缺少 GRADE_USERNAME 或 GRADE_PASSWORD")
+        sys.exit(1)
+
     session = requests.Session()
-    session.headers.update({"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36"})
+    session.headers.update({
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36"
+    })
 
-    try:
-        print("1. 正在登录...")
-        session.get(f"{base_url}/xtgl/login_slogin.html")
-        key_res = session.get(f"{base_url}/xtgl/login_getPublicKey.html?time={int(time.time() * 1000)}").json()
-        encrypted_pw = encrypt_password(PASSWORD, get_rsa_int(key_res['modulus']), get_rsa_int(key_res['exponent']))
+    print("1. 正在登录...")
+    session.get(f"{BASE_URL}/xtgl/login_slogin.html", timeout=10).raise_for_status()
 
-        login_data = {"yhm": USERNAME, "url": "/cjcx/cjcx_cxXsgrcj.html", "mm": encrypted_pw}
-        login_res = session.post(f"{base_url}/xtgl/login_slogin.html?time={int(time.time() * 1000)}", data=login_data)
+    key_res = session.get(
+        f"{BASE_URL}/xtgl/login_getPublicKey.html?time={int(time.time() * 1000)}",
+        timeout=10,
+    )
+    key_res.raise_for_status()
+    key_data = key_res.json()
 
-        if "用户名或密码不正确" in login_res.text:
-            print("登录失败！")
-            return
+    encrypted_pw = encrypt_password(
+        PASSWORD,
+        get_rsa_int(key_data["modulus"]),
+        get_rsa_int(key_data["exponent"]),
+    )
 
-        print("2. 登录成功，正在获取所有历史成绩...")
+    login_data = {
+        "yhm": USERNAME,
+        "url": "/cjcx/cjcx_cxXsgrcj.html",
+        "mm": encrypted_pw,
+    }
+    login_res = session.post(
+        f"{BASE_URL}/xtgl/login_slogin.html?time={int(time.time() * 1000)}",
+        data=login_data,
+        timeout=10,
+    )
+    login_res.raise_for_status()
 
-        # 获取所有历史成绩
-        query_data = {
-            "xnm": "",
-            "xqm": "",
-            "_search": "false",
-            "nd": int(time.time() * 1000),
-            "queryModel.showCount": "500",
-            "queryModel.currentPage": "1",
-            "queryModel.sortOrder": "desc",
-            "queryModel.sortName": "xnm",
-            "time": "0"
-        }
+    if "用户名或密码不正确" in login_res.text:
+        print("登录失败：用户名或密码不正确")
+        sys.exit(1)
 
-        grade_url = f"{base_url}/cjcx/cjcx_cxXsgrcj.html?doType=query&gnmkdm=N305005"
-        grade_res = session.post(grade_url, data=query_data)
+    print("2. 登录成功，正在获取成绩...")
+    grade_url = f"{BASE_URL}/cjcx/cjcx_cxXsgrcj.html?doType=query&gnmkdm=N305005"
+    query_data = {
+        "xnm": "",
+        "xqm": "",
+        "_search": "false",
+        "nd": int(time.time() * 1000),
+        "queryModel.showCount": "500",
+        "queryModel.currentPage": "1",
+        "queryModel.sortOrder": "desc",
+        "queryModel.sortName": "xnm",
+        "time": "0",
+    }
 
-        try:
-            items = grade_res.json().get('items', [])
-        except:
-            print("解析JSON失败，可能被拦截或Session失效")
-            return
+    grade_res = session.post(grade_url, data=query_data, timeout=10)
+    grade_res.raise_for_status()
+    items = grade_res.json().get("items", [])
 
-        print(f"共获取到 {len(items)} 条历史成绩记录。正在筛选本学期(2025)...")
+    old_ids = load_cache()
+    current_ids = set()
+    new_courses = []
 
-        # 读取缓存
-        old_ids = []
-        if os.path.exists("grade_cache.txt"):
-            with open("grade_cache.txt", "r", encoding="utf-8") as f:
-                old_ids = f.read().split(",")
+    for item in items:
+        xnm = str(item.get("xnm", ""))
+        if TARGET_XNM and xnm != TARGET_XNM:
+            continue
 
-        new_courses = []
-        current_ids = []
+        cid = f"{item.get('kch_id')}_{item.get('kcmc')}_{item.get('cj')}"
+        current_ids.add(cid)
 
-        # 筛选逻辑
-        for item in items:
-            if str(item.get('xnm')) == "2025":
-                # 组合ID
-                cid = f"{item.get('kch_id')}_{item.get('kcmc')}_{item.get('cj')}"
-                current_ids.append(cid)
+        if cid not in old_ids:
+            new_courses.append(item)
 
-                print(f"--> [2025] {item['kcmc']} | {item['cj']}分")
+    print(f"本次筛选到 {len(current_ids)} 条成绩记录。")
 
-                # 如果不在缓存里，或者是第一次运行（缓存文件不存在），则加入通知列表
-                if cid not in old_ids:
-                    new_courses.append(item)
+    if new_courses:
+        print(f"发现 {len(new_courses)} 门新出分课程，正在发送邮件...")
+        send_mail(new_courses)
+    else:
+        print("没有发现新发布的成绩。")
 
-        # 只有当发现新课时才操作
-        if new_courses:
-            print(f"\n发现 {len(new_courses)} 门新出分课程！正在发送邮件...")
-            send_mail(new_courses)
-
-            # 更新缓存：把当前所有2025的课程都记下来
-            # 注意：这里我们采用追加写入还是覆盖？
-            # 建议：既然 current_ids 包含了当前网页上所有的 2025 课程，
-            # 我们应该要把 old_ids 里属于以前年份的保留下来（如果有的话），
-            # 或者简单点，我们只记录所有的历史ID。
-
-            # 修正缓存逻辑：将本次发现的新课ID追加到缓存文件中
-            with open("grade_cache.txt", "a", encoding="utf-8") as f:
-                if os.path.getsize("grade_cache.txt") > 0:
-                    f.write(",")
-                f.write(",".join([f"{c['kch_id']}_{c['kcmc']}_{c['cj']}" for c in new_courses]))
-
-        else:
-            print("\n没有发现新发布的成绩（和上次缓存一致）。")
-
-    except Exception as e:
-        print(f"运行出错: {e}")
+    save_cache(current_ids)
 
 
 if __name__ == "__main__":
